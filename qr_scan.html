@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>出席登録 - スマート登校</title>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <!-- QRスキャンライブラリ -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Noto Sans JP', sans-serif;
+      background: #f4f6f8;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 32px 16px;
+    }
+
+    h1 {
+      font-size: 1.4rem;
+      color: #1565C0;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+      padding: 28px;
+      width: 100%;
+      max-width: 420px;
+    }
+
+    /* カメラ映像エリア */
+    #reader {
+      width: 100%;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: #1565C0;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-bottom: 10px;
+    }
+    .btn:hover { background: #0D47A1; }
+
+    .btn-stop {
+      background: #757575;
+      display: none;
+    }
+    .btn-stop:hover { background: #424242; }
+
+    /* メッセージ */
+    .msg {
+      margin-top: 20px;
+      padding: 12px 14px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      display: none;
+    }
+    .msg-success {
+      background: #E8F5E9;
+      border-left: 4px solid #43A047;
+      color: #2E7D32;
+    }
+    .msg-error {
+      background: #FFEBEE;
+      border-left: 4px solid #E53935;
+      color: #B71C1C;
+    }
+    .msg-info {
+      background: #E3F2FD;
+      border-left: 4px solid #1565C0;
+      color: #0D47A1;
+    }
+
+    .status {
+      font-size: 0.85rem;
+      color: #888;
+      text-align: center;
+      margin-top: 8px;
+    }
+
+    /* スキャン結果プレビュー */
+    .result-box {
+      background: #F5F5F5;
+      border-radius: 4px;
+      padding: 12px;
+      margin-top: 16px;
+      font-size: 0.9rem;
+      color: #333;
+      display: none;
+    }
+    .result-box span {
+      font-weight: bold;
+      color: #1565C0;
+    }
+  </style>
+</head>
+<body>
+
+<h1>📷 出席登録（QRスキャン）</h1>
+
+<div class="card">
+
+  <!-- カメラ映像 -->
+  <div id="reader"></div>
+
+  <!-- ボタン -->
+  <button class="btn" id="btnStart" onclick="startScan()">カメラを起動する</button>
+  <button class="btn btn-stop" id="btnStop" onclick="stopScan()">スキャンを停止する</button>
+
+  <p class="status" id="status">「カメラを起動する」を押してください</p>
+
+  <!-- スキャン結果プレビュー -->
+  <div class="result-box" id="resultBox">
+    読み取り結果：<span id="resultText"></span>
+  </div>
+
+  <!-- メッセージ -->
+  <div class="msg" id="msgBox"></div>
+
+</div>
+
+<script>
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // 🔧 Firebase の設定（自分のプロジェクトの値に変更してください）
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  const firebaseConfig = {
+    apiKey:            "YOUR_API_KEY",
+    authDomain:        "YOUR_PROJECT_ID.firebaseapp.com",
+    projectId:         "YOUR_PROJECT_ID",
+    storageBucket:     "YOUR_PROJECT_ID.appspot.com",
+    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+    appId:             "YOUR_APP_ID"
+  };
+
+  // Firebase 初期化
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // QRスキャナー
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  let html5QrCode = null;
+  let scanning    = false;
+
+  // カメラ起動
+  function startScan() {
+    html5QrCode = new Html5Qrcode("reader");
+    setStatus("スキャン中...");
+
+    html5QrCode.start(
+      { facingMode: "environment" },   // 背面カメラを使用
+      { fps: 10, qrbox: { width: 250, height: 250 } },
+      onScanSuccess,
+      onScanError
+    ).then(() => {
+      scanning = true;
+      document.getElementById("btnStart").style.display = "none";
+      document.getElementById("btnStop").style.display  = "block";
+    }).catch(err => {
+      showMsg("error", "カメラの起動に失敗しました。カメラへのアクセスを許可してください。");
+      console.error(err);
+    });
+  }
+
+  // スキャン停止
+  function stopScan() {
+    if (html5QrCode && scanning) {
+      html5QrCode.stop().then(() => {
+        scanning = false;
+        document.getElementById("btnStart").style.display = "block";
+        document.getElementById("btnStop").style.display  = "none";
+        setStatus("停止しました。再度カメラを起動できます。");
+      });
+    }
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // QR読み取り成功時の処理
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  async function onScanSuccess(decodedText) {
+    // 連続スキャン防止のため一時停止
+    await stopScan();
+
+    // 読み取り結果を表示
+    document.getElementById("resultBox").style.display = "block";
+    document.getElementById("resultText").textContent  = decodedText;
+    setStatus("QRコードを読み取りました");
+
+    // Firestore に出席を保存
+    await saveAttendance(decodedText);
+  }
+
+  // スキャン中のエラー（読み取れない間は無視）
+  function onScanError(error) {
+    // 読み取れないフレームは毎回発生するので何もしない
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // Firestore への保存
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  async function saveAttendance(studentId) {
+    setStatus("出席を登録中...");
+
+    try {
+      // 同じ学籍番号の本日分がすでにあるか確認
+      const today = new Date().toISOString().slice(0, 10); // "2025-06-15"
+
+      const existing = await db.collection("attendance")
+        .where("student_id", "==", studentId)
+        .where("date", "==", today)
+        .get();
+
+      if (!existing.empty) {
+        showMsg("info", `本日すでに出席登録済みです。（学籍番号: ${studentId}）`);
+        return;
+      }
+
+      // Firestore に保存
+      await db.collection("attendance").add({
+        student_id:  studentId,
+        date:        today,
+        timestamp:   firebase.firestore.FieldValue.serverTimestamp(),
+      });
+
+      showMsg("success", `出席を登録しました！（学籍番号: ${studentId}）`);
+      setStatus("登録完了");
+
+    } catch (e) {
+      showMsg("error", "Firestoreへの保存に失敗しました: " + e.message);
+      console.error(e);
+    }
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // UI ヘルパー
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  function showMsg(type, text) {
+    const box = document.getElementById("msgBox");
+    box.className  = "msg msg-" + type;
+    box.textContent = text;
+    box.style.display = "block";
+  }
+
+  function setStatus(text) {
+    document.getElementById("status").textContent = text;
+  }
+</script>
+
+</body>
+</html>
