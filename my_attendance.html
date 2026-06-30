@@ -124,6 +124,18 @@
 
   .mark { font-size: 16px; }
 
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+  .badge-count {
+    background: #eeebff;
+    color: #5a4fcf;
+  }
+
   .chevron {
     margin-left: 10px;
     color: #cbd5e0;
@@ -220,41 +232,43 @@ async function load() {
   const listArea    = document.getElementById('listArea');
 
   try {
-    // 全授業を日付降順で取得
-    const classesSnap = await getDocs(query(collection(db, 'attendance'), orderBy('date', 'desc')));
+    // 全授業を取得
+    const classesSnap = await getDocs(collection(db, 'attendance'));
 
     if (classesSnap.empty) {
       listArea.innerHTML = '<div class="empty">授業データがまだありません</div>';
       return;
     }
 
-    let presentCount = 0, lateCount = 0, absentCount = 0;
+    let presentCount = 0, lateCount = 0;
     let cardsHtml = '';
+    let classCount = 0;
 
     for (const classDoc of classesSnap.docs) {
       const cls     = classDoc.data();
       const classId = classDoc.id;
       const subject = escHtml(cls.subject || '授業名なし');
-      const date    = (cls.date || '').replace(/-/g, '/');
 
-      // この授業における自分の出席記録を取得
-      const recordRef  = doc(db, 'attendance', classId, 'records', studentId);
-      const recordSnap = await getDoc(recordRef);
+      // この授業における自分の全出席記録を取得（レコードID = "YYYY-MM-DD_studentId"）
+      const recordsSnap = await getDocs(
+        query(collection(db, 'attendance', classId, 'records'), orderBy('timestamp', 'desc'))
+      );
 
-      let status = 'absent';
-      let timeStr = '—';
-
-      if (recordSnap.exists()) {
-        const r = recordSnap.data();
-        status  = r.status === 'late' ? 'late' : 'present';
-        if (r.timestamp?.toDate) {
-          timeStr = r.timestamp.toDate().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+      const myRecords = [];
+      recordsSnap.forEach(d => {
+        if (d.id.endsWith('_' + studentId)) {
+          const dateKey = d.id.slice(0, d.id.length - studentId.length - 1);
+          myRecords.push({ date: dateKey, data: d.data() });
         }
-      }
+      });
 
-      if (status === 'present') presentCount++;
-      else if (status === 'late') lateCount++;
-      else absentCount++;
+      if (myRecords.length === 0) continue; // 出席記録が一度もない授業は表示しない
+      classCount++;
+
+      myRecords.forEach(r => {
+        if (r.data.status === 'late') lateCount++;
+        else presentCount++;
+      });
 
       const cardId = classId.replace(/[^a-z0-9]/gi, '_');
 
@@ -263,35 +277,41 @@ async function load() {
         <div class="class-header" id="hdr_${cardId}" onclick="toggleCard('${cardId}')">
           <div>
             <div class="class-title">${subject}</div>
-            <div class="class-date">${date}</div>
+            <div class="class-date">出席 ${myRecords.length} 回</div>
           </div>
           <div style="display:flex;align-items:center;gap:6px;">
-            ${statusPill(status)}
+            <span class="badge badge-count">${myRecords.length}</span>
             <span class="chevron" id="chev_${cardId}">▼</span>
           </div>
         </div>
         <div class="class-body" id="body_${cardId}">
-          <div class="detail-row">
-            <span class="detail-label">日付</span>
-            <span>${date}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">出席状況</span>
-            <span>${statusPill(status)}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">登録時刻</span>
-            <span>${timeStr}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">担当教員</span>
-            <span>${escHtml(cls.teacherName || '—')}</span>
-          </div>
+          <table class="attend-table">
+            <thead><tr><th>日付</th><th>出席状況</th><th>登録時刻</th></tr></thead>
+            <tbody>
+              ${myRecords.map(r => {
+                const dateDisplay = r.date.replace(/-/g, '/');
+                const timeStr = r.data.timestamp?.toDate
+                  ? r.data.timestamp.toDate().toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+                  : '—';
+                return `
+                  <tr>
+                    <td>${dateDisplay}</td>
+                    <td>${statusPill(r.data.status === 'late' ? 'late' : 'present')}</td>
+                    <td style="color:#a0aec0;font-size:12px;">${timeStr}</td>
+                  </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
         </div>
       </div>`;
     }
 
-    const total = presentCount + lateCount + absentCount;
+    if (classCount === 0) {
+      listArea.innerHTML = '<div class="empty">出席記録がまだありません</div>';
+      return;
+    }
+
+    const total = presentCount + lateCount;
 
     summaryArea.innerHTML = `
     <div class="summary-grid">
@@ -304,12 +324,12 @@ async function load() {
         <div class="lbl">遅刻 △</div>
       </div>
       <div class="stat-card">
-        <div class="num num-absent">${absentCount}</div>
-        <div class="lbl">欠席 ✕</div>
+        <div class="num" style="color:#667eea;">${classCount}</div>
+        <div class="lbl">受講科目数</div>
       </div>
     </div>`;
 
-    listArea.innerHTML = `<div class="section-label">授業ごとの出席状況（全 ${total} 回）</div>` + cardsHtml;
+    listArea.innerHTML = `<div class="section-label">授業ごとの出席履歴（全 ${total} 回）</div>` + cardsHtml;
 
   } catch(e) {
     console.error(e);
