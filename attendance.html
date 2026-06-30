@@ -25,8 +25,29 @@
       text-align: center;
     }
     h1 { font-size: 22px; color: #2c3e50; margin-bottom: 8px; }
-    .welcome { font-size: 16px; color: #555; margin-bottom: 28px; }
+    .welcome { font-size: 16px; color: #555; margin-bottom: 20px; }
     .welcome span { font-weight: bold; color: #2c3e50; }
+
+    /* 授業情報表示 */
+    .class-info {
+      background: #ebf4ff;
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin-bottom: 24px;
+      font-size: 14px;
+      line-height: 1.8;
+      text-align: left;
+    }
+    .class-info .subject { font-weight: 700; color: #3182ce; font-size: 16px; }
+    .class-info .date { color: #718096; font-size: 13px; }
+    .no-class {
+      background: #fff5f5;
+      color: #c53030;
+      border-radius: 8px;
+      padding: 14px 18px;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
 
     /* 出席ボタン */
     .btn-attendance {
@@ -97,8 +118,11 @@
   <h1>📋 出席登録</h1>
   <p class="welcome">ようこそ、<span id="username"></span> さん</p>
 
+  <!-- 授業情報 -->
+  <div id="classInfoArea"></div>
+
   <!-- 出席ボタン -->
-  <button class="btn-attendance" id="attendanceBtn">出席する</button>
+  <button class="btn-attendance" id="attendanceBtn" disabled>出席する</button>
 
   <!-- 出席状況確認ボタン -->
   <a href="./my_attendance.html" class="link-history">📅 これまでの出席状況を確認する</a>
@@ -111,7 +135,7 @@
 
 <script type="module">
   import { initializeApp }  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-  import { getFirestore, collection, addDoc, query, where, getDocs }
+  import { getFirestore, doc, getDoc, setDoc }
     from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
   const firebaseConfig = {
@@ -138,46 +162,86 @@
     document.getElementById('username').textContent = studentName;
   }
 
-  // ── 出席ボタン ──────────────────────────────
-  document.getElementById('attendanceBtn').addEventListener('click', async () => {
-    const btn = document.getElementById('attendanceBtn');
-    btn.disabled = true;
+  // URLから授業IDを取得（QRコードを読み取った場合）
+  const params = new URLSearchParams(location.search);
+  const classId = params.get('classId');
+
+  const classInfoArea = document.getElementById('classInfoArea');
+  const attendanceBtn = document.getElementById('attendanceBtn');
+
+  let currentClass = null;
+
+  async function init() {
+    if (!classId) {
+      classInfoArea.innerHTML = `<div class="no-class">授業のQRコードを読み取ってアクセスしてください</div>`;
+      return;
+    }
 
     try {
-      // 本日すでに出席済みか確認
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
+      const classSnap = await getDoc(doc(db, 'attendance', classId));
 
-      const q = query(
-        collection(db, 'attendances'),
-        where('studentId', '==', studentId)
-      );
-      const snap = await getDocs(q);
-
-      const alreadyToday = snap.docs.some(doc => {
-        const t = doc.data().timestamp?.toDate?.() || new Date(doc.data().timestamp);
-        return t >= today;
-      });
-
-      if (alreadyToday) {
-        showMsg('info', '本日はすでに出席登録済みです。');
-        btn.disabled = false;
+      if (!classSnap.exists()) {
+        classInfoArea.innerHTML = `<div class="no-class">該当する授業が見つかりませんでした</div>`;
         return;
       }
 
-      // Firestore に保存
-      await addDoc(collection(db, 'attendances'), {
-        studentId,
-        studentName,
+      currentClass = classSnap.data();
+      const subject = currentClass.subject || '授業名なし';
+      const date = (currentClass.date || '').replace(/-/g, '/');
+
+      classInfoArea.innerHTML = `
+        <div class="class-info">
+          <div class="subject">${escHtml(subject)}</div>
+          <div class="date">${date}</div>
+        </div>`;
+
+      // すでに出席済みか確認
+      const recordRef = doc(db, 'attendance', classId, 'records', studentId);
+      const recordSnap = await getDoc(recordRef);
+
+      if (recordSnap.exists()) {
+        attendanceBtn.disabled = true;
+        attendanceBtn.textContent = '出席登録済み';
+        showMsg('info', 'この授業はすでに出席登録済みです。');
+      } else {
+        attendanceBtn.disabled = false;
+      }
+
+    } catch (e) {
+      console.error(e);
+      classInfoArea.innerHTML = `<div class="no-class">エラー: ${e.message}</div>`;
+    }
+  }
+
+  // ── 出席ボタン ──────────────────────────────
+  attendanceBtn.addEventListener('click', async () => {
+    if (!classId || !currentClass) return;
+
+    attendanceBtn.disabled = true;
+
+    try {
+      const recordRef = doc(db, 'attendance', classId, 'records', studentId);
+      const recordSnap = await getDoc(recordRef);
+
+      if (recordSnap.exists()) {
+        showMsg('info', 'すでに出席登録済みです。');
+        attendanceBtn.textContent = '出席登録済み';
+        return;
+      }
+
+      await setDoc(recordRef, {
+        name: studentName,
+        status: 'present',
         timestamp: new Date()
       });
 
       showMsg('success', '出席を記録しました！');
+      attendanceBtn.textContent = '出席登録済み';
 
     } catch (e) {
       showMsg('error', '出席の記録に失敗しました。');
       console.error(e);
-      btn.disabled = false;
+      attendanceBtn.disabled = false;
     }
   });
 
@@ -195,6 +259,12 @@
     box.textContent = text;
     box.style.display = 'block';
   }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  init();
 </script>
 
 </body>
