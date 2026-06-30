@@ -187,22 +187,24 @@
 
       currentClass = classSnap.data();
       const subject = currentClass.subject || '授業名なし';
-      const date = (currentClass.date || '').replace(/-/g, '/');
+      const todayDisplay = new Date().toLocaleDateString('ja-JP', { year: 'numeric', month: 'long', day: 'numeric' });
 
       classInfoArea.innerHTML = `
         <div class="class-info">
           <div class="subject">${escHtml(subject)}</div>
-          <div class="date">${date}</div>
+          <div class="date">${todayDisplay}</div>
         </div>`;
 
-      // すでに出席済みか確認
-      const recordRef = doc(db, 'attendance', classId, 'records', studentId);
+      // 本日すでに出席済みか確認（レコードID = "YYYY-MM-DD_studentId"）
+      const todayStr = new Date().toISOString().split('T')[0];
+      const recordId = `${todayStr}_${studentId}`;
+      const recordRef = doc(db, 'attendance', classId, 'records', recordId);
       const recordSnap = await getDoc(recordRef);
 
       if (recordSnap.exists()) {
         attendanceBtn.disabled = true;
-        attendanceBtn.textContent = '出席登録済み';
-        showMsg('info', 'この授業はすでに出席登録済みです。');
+        attendanceBtn.textContent = '本日は出席登録済み';
+        showMsg('info', '本日はすでに出席登録済みです。');
       } else {
         attendanceBtn.disabled = false;
       }
@@ -220,12 +222,14 @@
     attendanceBtn.disabled = true;
 
     try {
-      const recordRef = doc(db, 'attendance', classId, 'records', studentId);
+      const todayStr = new Date().toISOString().split('T')[0];
+      const recordId = `${todayStr}_${studentId}`;
+      const recordRef = doc(db, 'attendance', classId, 'records', recordId);
       const recordSnap = await getDoc(recordRef);
 
       if (recordSnap.exists()) {
-        showMsg('info', 'すでに出席登録済みです。');
-        attendanceBtn.textContent = '出席登録済み';
+        showMsg('info', '本日はすでに出席登録済みです。');
+        attendanceBtn.textContent = '本日は出席登録済み';
         return;
       }
 
@@ -236,7 +240,7 @@
       });
 
       showMsg('success', '出席を記録しました！');
-      attendanceBtn.textContent = '出席登録済み';
+      attendanceBtn.textContent = '本日は出席登録済み';
 
     } catch (e) {
       showMsg('error', '出席の記録に失敗しました。');
