@@ -112,14 +112,13 @@
             }
             const cls = snap.data();
             const subject = cls.subject || '授業名なし';
-            const date = (cls.date || '').replace(/-/g, '/');
 
             // sensei.html の作成時と同じ仕組みでURLを組み立てる
             const url = `${location.origin}${location.pathname.replace('qrcode.html','attendance.html')}?classId=${classId}`;
 
             card.innerHTML = `
                 <div class="qr-box" id="qrcode"></div>
-                <div class="class-info-display"><span>${escHtml(subject)}</span>　${date}</div>
+                <div class="class-info-display"><span>${escHtml(subject)}</span></div>
                 <div class="class-id-display">授業ID: ${escHtml(classId)}</div>
                 <button class="btn-print" onclick="window.print()">🖨 印刷する</button>
                 <br>
