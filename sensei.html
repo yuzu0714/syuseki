@@ -274,9 +274,7 @@
     <div id="createSection">
         <label for="subjectName">授業名</label>
         <input type="text" id="subjectName" placeholder="例: 情報工学、電子回路1">
-
-        <label for="classDate">日付</label>
-        <input type="date" id="classDate">
+        <p style="font-size:12px;color:#a0aec0;margin-top:-10px;margin-bottom:16px;">※ QRコードは授業ごとに1枚作成し、毎回同じものを使い回します</p>
 
         <button class="btn-create" onclick="createClass()">QRコードを生成する</button>
     </div>
@@ -294,7 +292,7 @@
 
 <!-- 出席者リストカード -->
 <div class="card" id="attendanceList">
-    <h2>出席者リスト</h2>
+    <h2>本日の出席者リスト</h2>
     <div class="count-display" id="countDisplay"></div>
     <table class="attendance-table">
         <thead>
@@ -351,25 +349,21 @@
 
     window.createClass = async function() {
         const subject = document.getElementById('subjectName').value.trim();
-        const date = document.getElementById('classDate').value;
         if (!subject) { alert('授業名を入力してください'); return; }
-        if (!date)    { alert('日付を選択してください'); return; }
 
-        // 授業IDを自動生成（例: 20260624-abc12）
+        // 授業IDを自動生成（例: info101-abc12）固定ID・QRは使い回す
         const randomStr = Math.random().toString(36).slice(2, 7);
-        const dateStr = date.replace(/-/g, '');
-        const classId = `${dateStr}-${randomStr}`;
+        const classId = `class-${randomStr}`;
 
-        // Firestoreに授業を保存
+        // Firestoreに授業を保存（日付は持たない＝固定の授業）
         await setDoc(doc(db, 'attendance', classId), {
             subject: subject,
-            date: date,
             teacherId: localStorage.getItem('studentId'),
             teacherName: teacherName,
             createdAt: new Date()
         });
 
-        // QRコード生成
+        // QRコード生成（このURLは毎回同じものを使い回す）
         const url = `${location.origin}${location.pathname.replace('sensei.html','attendance.html')}?classId=${classId}`;
         document.getElementById('qrcode').innerHTML = '';
         new QRCode(document.getElementById('qrcode'), {
@@ -381,35 +375,38 @@
             correctLevel: QRCode.CorrectLevel.H
         });
 
-        document.getElementById('classInfoDisplay').innerHTML =
-            `<span>${subject}</span>　${date.replace(/-/g,'/')}`;
+        document.getElementById('classInfoDisplay').innerHTML = `<span>${subject}</span>`;
         document.getElementById('classIdDisplay').textContent = `授業ID: ${classId}`;
 
         document.getElementById('createSection').style.display = 'none';
         document.getElementById('qrSection').style.display = 'block';
 
-        // 出席リストのリアルタイム監視
+        // 本日分の出席リストをリアルタイム監視
         document.getElementById('attendanceList').style.display = 'block';
+        const todayStr = new Date().toISOString().split('T')[0];
         const recordsRef = collection(db, 'attendance', classId, 'records');
         if (unsubscribe) unsubscribe();
         unsubscribe = onSnapshot(query(recordsRef, orderBy('timestamp')), (snapshot) => {
             const tbody = document.getElementById('attendanceBody');
-            const count = snapshot.size;
-            document.getElementById('countDisplay').textContent = `出席: ${count}人`;
+            // 本日分のみフィルタ（ドキュメントIDが "YYYY-MM-DD_studentId" の形式）
+            const todayDocs = snapshot.docs.filter(d => d.id.startsWith(todayStr + '_'));
+            const count = todayDocs.length;
+            document.getElementById('countDisplay').textContent = `本日の出席: ${count}人`;
             if (count === 0) {
                 tbody.innerHTML = '<tr><td colspan="4" class="empty-msg">まだ出席者はいません</td></tr>';
                 return;
             }
             tbody.innerHTML = '';
-            snapshot.forEach(d => {
+            todayDocs.forEach(d => {
                 const r = d.data();
+                const studentIdFromDoc = d.id.slice(todayStr.length + 1);
                 const time = r.timestamp?.toDate().toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'}) ?? '-';
                 const badge = r.status === 'late'
                     ? '<span class="badge badge-late">遅刻</span>'
                     : '<span class="badge badge-present">出席</span>';
                 tbody.innerHTML += `
                     <tr>
-                        <td>${d.id}</td>
+                        <td>${studentIdFromDoc}</td>
                         <td>${r.name}</td>
                         <td>${badge}</td>
                         <td>${time}</td>
@@ -432,17 +429,16 @@
         window.location.href = './index.html';
     };
 
-    // ---- 授業別出席状況 ----
+    // ---- 授業別出席状況（日付ごと） ----
     window.loadOverview = async function() {
         const container = document.getElementById('overviewContainer');
         container.innerHTML = '<div class="loading-msg">読み込み中…</div>';
 
         try {
-            // 全授業を取得
-            const { getDocs: _getDocs, collection: _col, query: _q, orderBy: _ob, collectionGroup } =
+            const { getDocs: _getDocs, collection: _col, query: _q, orderBy: _ob } =
                 await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js");
 
-            const classesSnap = await _getDocs(_q(_col(db, 'attendance'), _ob('date', 'desc')));
+            const classesSnap = await _getDocs(_q(_col(db, 'attendance'), _ob('createdAt', 'desc')));
 
             if (classesSnap.empty) {
                 container.innerHTML = '<div class="overview-empty">授業がまだありません</div>';
@@ -464,62 +460,89 @@
                 const cls = classDoc.data();
                 const classId = classDoc.id;
 
-                // この授業の出席記録を取得
+                // この授業の全記録を取得（ドキュメントID = "YYYY-MM-DD_studentId"）
                 const recordsSnap = await _getDocs(
                     _q(_col(db, 'attendance', classId, 'records'), _ob('timestamp'))
                 );
-                const records = {};
-                recordsSnap.forEach(d => { records[d.id] = d.data(); });
 
-                const presentCount = Object.keys(records).length;
-                const totalCount = studentIds.length;
+                // 日付ごとにグループ化
+                const byDate = {};
+                recordsSnap.forEach(d => {
+                    const underscoreIdx = d.id.indexOf('_');
+                    if (underscoreIdx === -1) return;
+                    const dateKey = d.id.slice(0, underscoreIdx);
+                    const sid = d.id.slice(underscoreIdx + 1);
+                    if (!byDate[dateKey]) byDate[dateKey] = {};
+                    byDate[dateKey][sid] = d.data();
+                });
+
+                const dateKeys = Object.keys(byDate).sort().reverse();
 
                 html += `
                 <div class="class-block">
                     <div class="class-block-header">
                         <span class="class-block-title">${escHtml(cls.subject || '授業名なし')}</span>
-                        <span class="class-block-date">${(cls.date || '').replace(/-/g, '/')}</span>
                         <a class="qr-link-btn" href="./qrcode.html?classId=${encodeURIComponent(classId)}" target="_blank">📱 QRコード</a>
-                        <span class="class-block-count">出席 ${presentCount} / ${totalCount} 人</span>
-                    </div>
-                    <table class="overview-table">
-                        <thead>
-                            <tr>
-                                <th>学籍番号</th>
-                                <th>氏名</th>
-                                <th>出席状況</th>
-                                <th>登録時刻</th>
-                            </tr>
-                        </thead>
-                        <tbody>`;
+                        <span class="class-block-count">実施日数 ${dateKeys.length} 回</span>
+                    </div>`;
 
-                if (studentIds.length === 0) {
-                    html += `<tr><td colspan="4" class="overview-empty">学生データなし</td></tr>`;
+                if (dateKeys.length === 0) {
+                    html += `<div class="overview-empty">まだこの授業の出席記録がありません</div>`;
                 } else {
-                    studentIds.forEach(sid => {
-                        const name = allStudents[sid];
-                        const rec = records[sid];
-                        let mark, markClass, timeStr;
-                        if (!rec) {
-                            mark = '✕'; markClass = 'mark-absent'; timeStr = '—';
-                        } else if (rec.status === 'late') {
-                            mark = '△'; markClass = 'mark-late';
-                            timeStr = rec.timestamp?.toDate().toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'}) ?? '—';
-                        } else {
-                            mark = '○'; markClass = 'mark-present';
-                            timeStr = rec.timestamp?.toDate().toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'}) ?? '—';
-                        }
+                    dateKeys.forEach(dateKey => {
+                        const records = byDate[dateKey];
+                        const presentCount = Object.keys(records).length;
+                        const totalCount = studentIds.length;
+                        const dateDisplay = dateKey.replace(/-/g, '/');
+
                         html += `
-                            <tr>
-                                <td>${escHtml(sid)}</td>
-                                <td>${escHtml(name)}</td>
-                                <td><span class="mark ${markClass}">${mark}</span></td>
-                                <td style="color:#718096;font-size:12px;">${timeStr}</td>
-                            </tr>`;
+                        <div style="margin-bottom:18px;">
+                            <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">
+                                <span style="font-size:13px;font-weight:700;color:#4a5568;">${dateDisplay}</span>
+                                <span style="font-size:11px;color:#a0aec0;">出席 ${presentCount} / ${totalCount} 人</span>
+                            </div>
+                            <table class="overview-table">
+                                <thead>
+                                    <tr>
+                                        <th>学籍番号</th>
+                                        <th>氏名</th>
+                                        <th>出席状況</th>
+                                        <th>登録時刻</th>
+                                    </tr>
+                                </thead>
+                                <tbody>`;
+
+                        if (studentIds.length === 0) {
+                            html += `<tr><td colspan="4" class="overview-empty">学生データなし</td></tr>`;
+                        } else {
+                            studentIds.forEach(sid => {
+                                const name = allStudents[sid];
+                                const rec = records[sid];
+                                let mark, markClass, timeStr;
+                                if (!rec) {
+                                    mark = '✕'; markClass = 'mark-absent'; timeStr = '—';
+                                } else if (rec.status === 'late') {
+                                    mark = '△'; markClass = 'mark-late';
+                                    timeStr = rec.timestamp?.toDate().toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'}) ?? '—';
+                                } else {
+                                    mark = '○'; markClass = 'mark-present';
+                                    timeStr = rec.timestamp?.toDate().toLocaleTimeString('ja-JP', {hour:'2-digit', minute:'2-digit'}) ?? '—';
+                                }
+                                html += `
+                                    <tr>
+                                        <td>${escHtml(sid)}</td>
+                                        <td>${escHtml(name)}</td>
+                                        <td><span class="mark ${markClass}">${mark}</span></td>
+                                        <td style="color:#718096;font-size:12px;">${timeStr}</td>
+                                    </tr>`;
+                            });
+                        }
+
+                        html += `</tbody></table></div>`;
                     });
                 }
 
-                html += `</tbody></table></div>`;
+                html += `</div>`;
             }
 
             container.innerHTML = html;
